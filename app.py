@@ -9,7 +9,7 @@ Fully compatible with Streamlit Light Mode and Dark Mode.
 import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch
+from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
 
 # ------------------------------------------------------------------------------
 # 1.  PAGE CONFIG  (must be first Streamlit call)
@@ -370,73 +370,85 @@ def _arr(ax, x0, x1, y):
 
 
 def draw_std_diagram(M: int, N: int, Dk: int, H: int, W: int) -> plt.Figure:
-    """Block diagram for a standard 2-D convolution — theme-adaptive."""
-    fig, ax = plt.subplots(figsize=(6.8, 4.4))
-    ax.set_xlim(0, 10); ax.set_ylim(0, 7.5); ax.axis("off")
-    # Title inherits _CHART_TEXT from rcParams — no hard-coded colour here.
+    """Block diagram for a standard 2-D convolution — theme-adaptive.
+
+    Canvas widened to figsize=(8.5, 4.4) / xlim=(0, 12) so labels and stacked
+    layers never clip on compact monitors.  Element positions scaled ~1.2× from
+    the original 10-unit layout to fill the extra space evenly.
+    """
+    fig, ax = plt.subplots(figsize=(8.5, 4.4))
+    ax.set_xlim(0, 12); ax.set_ylim(0, 7.5); ax.axis("off")
     ax.set_title("Standard Convolution  (1 operation)",
                  fontsize=13, fontweight="bold", pad=14)
 
-    # Light pastel fills: clearly visible on white; edge colour carries contrast on dark.
-    _stacked(ax, 0.3, 1.6, 1.7, 3.8, M,
-             "#dbeafe", "#1d4ed8", "Input", f"{H}x{W}x{M}")
-    _arr(ax, 2.15, 3.1, 3.5)
-    _kbox(ax, 3.2, 2.4, 2.5, 2.2,
-          "#fef3c7", "#d97706",          # amber pastel fill, dark amber edge
-          f"{Dk}x{Dk}x{M}x{N}",
-          f"Kernel - {fmt(Dk * Dk * M * N)} params")
-    _arr(ax, 5.8, 6.7, 3.5)
-    _stacked(ax, 6.8, 1.6, 1.7, 3.8, N,
-             "#dcfce7", "#16a34a", "Output", f"{H}x{W}x{N}")
+    _stacked(ax, 0.35, 1.6, 2.0, 3.8, M,
+             "#dbeafe", "#1d4ed8", "Input", f"{H}×{W}×{M}")
+    _arr(ax, 2.55, 3.65, 3.5)
+    _kbox(ax, 3.7, 2.4, 2.8, 2.2,
+          "#fef3c7", "#d97706",
+          f"{Dk}×{Dk}×{M}×{N}",
+          f"Kernel — {fmt(Dk * Dk * M * N)} params")
+    _arr(ax, 6.6, 7.65, 3.5)
+    _stacked(ax, 7.7, 1.6, 2.0, 3.8, N,
+             "#dcfce7", "#16a34a", "Output", f"{H}×{W}×{N}")
 
-    # Badge: semi-transparent indigo tint — works as tinted glass on any bg.
-    ax.text(5.0, 0.5, "SINGLE-PASS  -  ALL CHANNELS FUSED",
+    ax.text(5.5, 0.5, "SINGLE-PASS  ·  ALL CHANNELS FUSED",
             ha="center", fontsize=9, fontweight="bold", color="#4f46e5",
             bbox=dict(boxstyle="round,pad=0.4",
-                      facecolor=(0.38, 0.34, 0.93, 0.12),   # indigo @ 12 % alpha
+                      facecolor=(0.38, 0.34, 0.93, 0.12),
                       edgecolor="#6366f1", lw=1.4))
-    plt.tight_layout()
+    plt.tight_layout(pad=1.2)
     return fig
 
 
 def draw_dws_diagram(M: int, N: int, Dk: int, H: int, W: int) -> plt.Figure:
-    """Block diagram for depthwise separable convolution — theme-adaptive."""
+    """Block diagram for depthwise separable convolution — theme-adaptive.
+
+    Canvas widened to figsize=(8.5, 4.4) / xlim=(0, 14) to match the standard
+    conv diagram height and give all five elements (input, DW kernel, intermediate
+    tensor, PW kernel, output) breathing room.  The previous xlim=(0, 10) caused
+    the rightmost output stack to clip its right edge at ~x=10.12.
+    """
     dp = dws_params(M, N, Dk)
-    fig, ax = plt.subplots(figsize=(6.8, 4.4))
-    ax.set_xlim(0, 10); ax.set_ylim(0, 7.5); ax.axis("off")
+    fig, ax = plt.subplots(figsize=(8.5, 4.4))
+    ax.set_xlim(0, 14); ax.set_ylim(0, 7.5); ax.axis("off")
     ax.set_title("Depthwise Separable Convolution  (2 operations)",
                  fontsize=13, fontweight="bold", pad=14)
 
-    _stacked(ax, 0.1, 1.6, 1.3, 3.8, M,
-             "#dbeafe", "#1d4ed8", "Input", f"{H}x{W}x{M}")
-    _arr(ax, 1.55, 2.35, 3.5)
+    # Input tensor — left anchor
+    _stacked(ax, 0.15, 1.6, 1.6, 3.8, M,
+             "#dbeafe", "#1d4ed8", "Input", f"{H}×{W}×{M}")
+    _arr(ax, 1.95, 2.75, 3.5)
 
-    _kbox(ax, 2.45, 2.5, 1.9, 2.0,
-          "#fce7f3", "#db2777",          # rose pastel fill, dark rose edge
-          f"{Dk}x{Dk} per ch.",
-          f"DW - {fmt(dp['dw'])} params")
-    _arr(ax, 4.45, 5.05, 3.5)
+    # Depthwise kernel block
+    _kbox(ax, 2.85, 2.5, 2.5, 2.0,
+          "#fce7f3", "#db2777",
+          f"{Dk}×{Dk} per ch.",
+          f"DW — {fmt(dp['dw'])} params")
+    _arr(ax, 5.45, 6.2, 3.5)
 
-    _stacked(ax, 5.1, 1.8, 1.1, 3.3, M,
-             "#ede9fe", "#7c3aed", "Interm.", f"{H}x{W}x{M}")
-    _arr(ax, 6.3, 6.85, 3.5)
+    # Intermediate feature map (same spatial size, same M channels)
+    _stacked(ax, 6.3, 1.8, 1.4, 3.3, M,
+             "#ede9fe", "#7c3aed", "Interm.", f"{H}×{W}×{M}")
+    _arr(ax, 7.9, 8.65, 3.5)
 
-    _kbox(ax, 6.9, 2.5, 1.7, 2.0,
-          "#d1fae5", "#059669",          # emerald pastel fill, dark green edge
-          "1x1  chan. mix",
-          f"PW - {fmt(dp['pw'])} params")
-    _arr(ax, 8.7, 9.3, 3.5)
+    # Pointwise kernel block
+    _kbox(ax, 8.75, 2.5, 2.5, 2.0,
+          "#d1fae5", "#059669",
+          "1×1  chan. mix",
+          f"PW — {fmt(dp['pw'])} params")
+    _arr(ax, 11.35, 12.15, 3.5)
 
-    _stacked(ax, 9.35, 1.6, 0.45, 3.8, N,
-             "#dcfce7", "#16a34a", "Output", f"{H}x{W}x{N}")
+    # Output tensor — right anchor (w=1.35 prevents clipping from stacking offset)
+    _stacked(ax, 12.25, 1.6, 1.35, 3.8, N,
+             "#dcfce7", "#16a34a", "Output", f"{H}×{W}×{N}")
 
-    # Badge: semi-transparent rose tint.
-    ax.text(5.0, 0.5, "SPATIAL FILTERING  then  CHANNEL MIXING  (FACTORISED)",
+    ax.text(7.0, 0.5, "SPATIAL FILTERING  ·  then  ·  CHANNEL MIXING  (FACTORISED)",
             ha="center", fontsize=8.5, fontweight="bold", color="#be185d",
             bbox=dict(boxstyle="round,pad=0.4",
-                      facecolor=(0.86, 0.15, 0.47, 0.10),   # rose @ 10 % alpha
+                      facecolor=(0.86, 0.15, 0.47, 0.10),
                       edgecolor="#db2777", lw=1.4))
-    plt.tight_layout()
+    plt.tight_layout(pad=1.2)
     return fig
 
 
@@ -495,88 +507,100 @@ def draw_ratio_breakdown(M: int, N: int, Dk: int, H: int, W: int, s_f: int) -> p
 
 
 def draw_mbv2_diagram(M: int, N: int, Dk: int, H: int, W: int, t: int) -> plt.Figure:
-    """
-    Block diagram for a MobileNetV2 Inverted Residual Bottleneck — theme-adaptive.
+    """Block diagram for a MobileNetV2 Inverted Residual Bottleneck — theme-adaptive.
 
-    Shows the three sequential layers (Expand → Depthwise → Project) plus a
-    dashed residual skip connection when M == N (stride-1 condition).
+    Canvas: figsize=(10.0, 5.6), xlim=(0, 14.5), ylim=(0, 9.5).
+    The previous xlim=(0, 10) packed five diagram elements into a space that
+    caused the output stack and residual-skip label to overflow the axes boundary
+    on compact monitors.  The new layout distributes all five regions with uniform
+    0.6-unit inter-element gaps, leaving ~1.5 units of right margin.
+
+    FancyArrowPatch (residual skip) is imported at module level — the local
+    import that previously lived inside this function has been removed.
     """
     tM = t * M
     mp = mbv2_params(M, N, Dk, t)
 
-    fig, ax = plt.subplots(figsize=(6.8, 5.2))
-    ax.set_xlim(0, 10)
-    ax.set_ylim(0, 8.8)
+    fig, ax = plt.subplots(figsize=(10.0, 5.6))
+    ax.set_xlim(0, 14.5)
+    ax.set_ylim(0, 9.5)
     ax.axis("off")
     ax.set_title(f"MobileNetV2 Inverted Residual Block  (t = {t})",
-                 fontsize=13, fontweight="bold", pad=14)
+                 fontsize=13, fontweight="bold", pad=16)
 
     # ── Input tensor stack ────────────────────────────────────────────────────
-    _stacked(ax, 0.1, 2.0, 1.1, 3.5, M,
-             "#dbeafe", "#1d4ed8", "Input", f"{H}x{W}x{M}")
-    _arr(ax, 1.35, 1.95, 3.75)
+    # Right stacked edge: 0.25 + 0.32 + 1.3 = 1.87
+    _stacked(ax, 0.25, 2.2, 1.3, 3.8, M,
+             "#dbeafe", "#1d4ed8", "Input", f"{H}×{W}×{M}")
+    _arr(ax, 1.95, 2.65, 4.1)
 
-    # ── Stage 1: Expand (1×1 PW, M → tM) ─────────────────────────────────────
-    _kbox(ax, 2.0, 2.5, 1.7, 2.5,
+    # ── Stage 1: Expand  (1×1 PW, M → tM) ───────────────────────────────────
+    # Box spans x ∈ [2.7, 4.9]; centre x = 3.8
+    _kbox(ax, 2.7, 2.7, 2.2, 2.8,
           "#fef9c3", "#ca8a04",
-          f"1×1  M→{tM}",
+          f"1×1   M→{tM}",
           f"Expand · {fmt(mp['expand'])} params")
-    ax.text(2.85, 5.3, "① Expand", ha="center", fontsize=8,
+    ax.text(3.8, 5.75, "① Expand", ha="center", fontsize=8.5,
             fontweight="bold", color="#ca8a04")
-    _arr(ax, 3.75, 4.25, 3.75)
+    _arr(ax, 5.0, 5.5, 4.1)
 
-    # ── Stage 2: Depthwise (Dk×Dk, tM channels) ──────────────────────────────
-    _kbox(ax, 4.3, 2.5, 1.7, 2.5,
+    # ── Stage 2: Depthwise  (Dk×Dk on tM channels) ───────────────────────────
+    # Box spans x ∈ [5.55, 7.75]; centre x = 6.65
+    _kbox(ax, 5.55, 2.7, 2.2, 2.8,
           "#fce7f3", "#db2777",
-          f"{Dk}×{Dk}  ch={tM}",
+          f"{Dk}×{Dk}   ch={tM}",
           f"DW · {fmt(mp['dw'])} params")
-    ax.text(5.15, 5.3, "② Depthwise", ha="center", fontsize=8,
+    ax.text(6.65, 5.75, "② Depthwise", ha="center", fontsize=8.5,
             fontweight="bold", color="#db2777")
-    _arr(ax, 6.05, 6.55, 3.75)
+    _arr(ax, 7.85, 8.35, 4.1)
 
-    # ── Stage 3: Project (1×1 PW, tM → N) ────────────────────────────────────
-    _kbox(ax, 6.6, 2.5, 1.7, 2.5,
+    # ── Stage 3: Project  (1×1 PW, tM → N) ──────────────────────────────────
+    # Box spans x ∈ [8.4, 10.6]; centre x = 9.5
+    _kbox(ax, 8.4, 2.7, 2.2, 2.8,
           "#d1fae5", "#059669",
-          f"1×1  {tM}→N",
+          f"1×1   {tM}→N",
           f"Project · {fmt(mp['project'])} params")
-    ax.text(7.45, 5.3, "③ Project", ha="center", fontsize=8,
+    ax.text(9.5, 5.75, "③ Project", ha="center", fontsize=8.5,
             fontweight="bold", color="#059669")
-    _arr(ax, 8.35, 8.85, 3.75)
+    _arr(ax, 10.7, 11.3, 4.1)
 
     # ── Output tensor stack ───────────────────────────────────────────────────
-    _stacked(ax, 8.9, 2.0, 0.75, 3.5, N,
-             "#dcfce7", "#16a34a", "Output", f"{H}x{W}x{N}")
+    # Right stacked edge: 11.35 + 0.32 + 1.3 = 12.97  (< 14.5 — no clipping)
+    _stacked(ax, 11.35, 2.2, 1.3, 3.8, N,
+             "#dcfce7", "#16a34a", "Output", f"{H}×{W}×{N}")
 
-    # ── Intermediate tensor dimension labels ──────────────────────────────────
-    for xc in (4.0, 6.3):
-        ax.text(xc, 1.7, f"H×W×{tM}", ha="center", fontsize=7,
+    # ── Intermediate tensor labels (tM-channel maps between stages) ───────────
+    # Placed below the arrow midpoints at y = 1.9
+    for xc in (5.25, 8.1):
+        ax.text(xc, 1.9, f"H×W×{tM}", ha="center", fontsize=7.5,
                 color=_T, style="italic")
 
-    # ── Residual skip connection (shown only when M == N, stride-1 block) ─────
+    # ── Residual skip connection (stride-1 blocks only, where M == N) ─────────
+    # FancyArrowPatch imported at module level (top of file).
     if M == N:
-        from matplotlib.patches import FancyArrowPatch
         skip = FancyArrowPatch(
-            (0.65, 6.6), (9.2, 6.6),
+            (0.85, 7.1), (12.0, 7.1),
             arrowstyle="-|>",
             connectionstyle="arc3,rad=0.0",
             color="#6366f1", lw=1.8, linestyle="dashed",
         )
         ax.add_patch(skip)
-        ax.text(4.95, 7.05,
+        ax.text(6.4, 7.6,
                 "Residual skip  (M = N, stride = 1  →  output += input)",
                 ha="center", fontsize=7.5, color="#6366f1", style="italic")
     else:
-        ax.text(4.95, 6.85, "No skip  (M ≠ N  →  projection-only block)",
+        ax.text(6.4, 7.3,
+                "No skip  (M ≠ N  →  projection-only block)",
                 ha="center", fontsize=7.5, color=_T, style="italic")
 
     # ── Bottom badge ──────────────────────────────────────────────────────────
-    ax.text(5.0, 0.75,
+    ax.text(6.4, 0.65,
             f"3-STAGE INVERTED BOTTLENECK  ·  t = {t}  ·  expanded ch = {tM}",
             ha="center", fontsize=8.5, fontweight="bold", color="#7c3aed",
             bbox=dict(boxstyle="round,pad=0.4",
                       facecolor=(0.49, 0.23, 0.93, 0.10),
                       edgecolor="#7c3aed", lw=1.4))
-    plt.tight_layout()
+    plt.tight_layout(pad=1.2)
     return fig
 
 
@@ -642,19 +666,70 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("**Hyper-Parameters**")
+    st.caption(
+        "Sliders snap to standard DL dimensions (×16 for channels, ×7 for "
+        "spatial). Type any exact value in the right-hand box — it overrides "
+        "the snap step and is used for all calculations."
+    )
 
-    # ── Core sliders (always visible) ─────────────────────────────────────────
-    M  = st.slider("Input Channels  (M)",   1, 512,  32, 1,
-                   help="Number of channels in the input feature map.")
-    N  = st.slider("Output Channels  (N)",  1, 512,  64, 1,
-                   help="Number of channels produced by the convolution.")
-    Dk = st.slider("Kernel Size  (D_K)",    1,  11,   3, 2,
-                   help="Square kernel dimension Dk × Dk. Odd values only.")
-    H  = st.slider("Spatial Size  (H = W)", 4, 256,  56, 4,
-                   help="Feature map height = width. Same padding assumed.")
-    W  = H
+    # ── Input Channels (M) ────────────────────────────────────────────────────
+    # step=16 aligns with power-of-2 filter counts used in every major backbone
+    # (ResNet: 64/128/256/512, MobileNet: 16/32/64/96/…).
+    M_snap = st.slider(
+        "Input Channels  (M)",
+        min_value=16, max_value=512, value=32, step=16,
+        help="Snap step = 16 — covers all standard layer widths (16, 32, 64, 128, 256, 512).",
+    )
+    _sl, _nb = st.columns([3, 1])
+    _sl.caption("← drag to snap · type exact →")
+    M = _nb.number_input(
+        "M exact", min_value=1, max_value=512, value=M_snap, step=1,
+        label_visibility="collapsed",
+        help="Enter any exact channel count. Moving the slider above will reset this field.",
+    )
 
-    # ── Expansion factor (MBv2 mode only) ─────────────────────────────────────
+    # ── Output Channels (N) ───────────────────────────────────────────────────
+    N_snap = st.slider(
+        "Output Channels  (N)",
+        min_value=16, max_value=512, value=64, step=16,
+        help="Snap step = 16 — standard output widths.",
+    )
+    _sl, _nb = st.columns([3, 1])
+    _sl.caption("← drag to snap · type exact →")
+    N = _nb.number_input(
+        "N exact", min_value=1, max_value=512, value=N_snap, step=1,
+        label_visibility="collapsed",
+        help="Enter any exact channel count.",
+    )
+
+    # ── Kernel Size (Dk) — small discrete range, slider only ─────────────────
+    Dk = st.slider(
+        "Kernel Size  (D_K)",
+        min_value=1, max_value=11, value=3, step=2,
+        help="Square kernel Dk×Dk. Step = 2 enforces odd values (1, 3, 5, 7, 9, 11).",
+    )
+
+    # ── Spatial Dimension (H = W) ─────────────────────────────────────────────
+    # step=7 hits every standard ImageNet feature-map size:
+    #   7 → 14 → 28 → 56 → 112 → 224 (each a ×2 upscaling step).
+    H_snap = st.slider(
+        "Spatial Size  (H = W)",
+        min_value=7, max_value=224, value=56, step=7,
+        help=(
+            "Snap step = 7 — covers all ImageNet feature-map sizes: "
+            "7, 14, 28, 56, 112, 224."
+        ),
+    )
+    _sl, _nb = st.columns([3, 1])
+    _sl.caption("← drag to snap · type exact →")
+    H = _nb.number_input(
+        "H exact", min_value=1, max_value=512, value=H_snap, step=1,
+        label_visibility="collapsed",
+        help="Enter any exact spatial dimension.",
+    )
+    W = H
+
+    # ── Expansion Factor (t) — MBv2 mode only ─────────────────────────────────
     if _mbv2_mode:
         t = st.slider(
             "Expansion Factor  (t)",
