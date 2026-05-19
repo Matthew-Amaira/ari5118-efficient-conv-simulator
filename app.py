@@ -245,6 +245,61 @@ def reduction_ratio(N: int, Dk: int) -> float:
     return (1.0 / N) + (1.0 / (Dk ** 2))
 
 
+# ── MobileNetV2 Inverted Residual Bottleneck ──────────────────────────────────
+# The block consists of three sequential layers:
+#   1. Expand   : 1×1 PW conv, M  → t·M   (widens the representation)
+#   2. Depthwise: Dk×Dk DW conv, t·M      (spatial filtering in high-dim space)
+#   3. Project  : 1×1 PW conv, t·M → N   (compresses back to target width)
+# A residual skip is added when M == N (stride-1 blocks only).
+
+def mbv2_params(M: int, N: int, Dk: int, t: int) -> dict:
+    """
+    Parameter counts for a MobileNetV2 Inverted Residual Bottleneck block.
+
+    Stage 1 — Expand  : Params = M  × (t·M)  = t·M²
+    Stage 2 — DW      : Params = Dk²× (t·M)
+    Stage 3 — Project : Params = (t·M) × N   = t·M·N
+    Total             : t·M·(M + Dk² + N)
+    """
+    tM      = t * M
+    expand  = M  * tM          # 1×1: in_ch × out_ch
+    dw      = Dk * Dk * tM     # DW : Dk² × ch
+    project = tM * N           # 1×1: in_ch × out_ch
+    return {"expand": expand, "dw": dw, "project": project, "total": expand + dw + project}
+
+
+def mbv2_flops(M: int, N: int, Dk: int, H: int, W: int, t: int) -> dict:
+    """
+    FLOPs (2 × MACs) for a MobileNetV2 Inverted Residual Bottleneck block.
+
+    Stage 1 — Expand  : 2·M·(t·M)·H·W
+    Stage 2 — DW      : 2·Dk²·(t·M)·H·W
+    Stage 3 — Project : 2·(t·M)·N·H·W
+    Total             : 2·t·M·H·W·(M + Dk² + N)
+    """
+    tM      = t * M
+    expand  = int(2 * M  * tM * H * W)
+    dw      = int(2 * Dk * Dk * tM * H * W)
+    project = int(2 * tM * N  * H * W)
+    return {"expand": expand, "dw": dw, "project": project, "total": expand + dw + project}
+
+
+def mbv2_reduction_ratio(M: int, N: int, Dk: int, t: int) -> float:
+    """
+    Cost ratio of MBv2 block vs an equivalent standard conv (same I/O shape).
+
+    Derivation:
+        Std  params = Dk² · M · N
+        MBv2 params = t · M · (M + Dk² + N)
+        Ratio       = t · (M + Dk² + N) / (Dk² · N)
+
+    Values > 1 indicate MBv2 costs MORE parameters than a plain Dk×Dk conv;
+    the advantage of MBv2 is architectural quality (residual flow, high-dim
+    feature space for DW), not raw parameter compression.
+    """
+    return (t * (M + Dk ** 2 + N)) / (Dk ** 2 * N)
+
+
 def fmt(n: int) -> str:
     """Human-readable magnitude string (K / M / B)."""
     if n >= 1_000_000_000:
@@ -385,10 +440,14 @@ def draw_dws_diagram(M: int, N: int, Dk: int, H: int, W: int) -> plt.Figure:
     return fig
 
 
-def draw_bar_chart(sp: int, dp: int, sf: int, df: int) -> plt.Figure:
-    """Side-by-side performance bar chart — theme-adaptive."""
+def draw_bar_chart(sp: int, dp: int, sf: int, df: int,
+                   cmp_label: str = "DW Separable\nConv") -> plt.Figure:
+    """Side-by-side performance bar chart — theme-adaptive.
+
+    cmp_label: x-axis label for the second (comparison) bar.
+    """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 3.8))
-    cats   = ["Standard\nConv", "DW Separable\nConv"]
+    cats   = ["Standard\nConv", cmp_label]
     c_pair = [("#6366f1", "#22c55e"), ("#f59e0b", "#ec4899")]
 
     for ax, vals, colors, title, unit in [
@@ -435,78 +494,266 @@ def draw_ratio_breakdown(M: int, N: int, Dk: int, H: int, W: int, s_f: int) -> p
     return fig
 
 
+def draw_mbv2_diagram(M: int, N: int, Dk: int, H: int, W: int, t: int) -> plt.Figure:
+    """
+    Block diagram for a MobileNetV2 Inverted Residual Bottleneck — theme-adaptive.
+
+    Shows the three sequential layers (Expand → Depthwise → Project) plus a
+    dashed residual skip connection when M == N (stride-1 condition).
+    """
+    tM = t * M
+    mp = mbv2_params(M, N, Dk, t)
+
+    fig, ax = plt.subplots(figsize=(6.8, 5.2))
+    ax.set_xlim(0, 10)
+    ax.set_ylim(0, 8.8)
+    ax.axis("off")
+    ax.set_title(f"MobileNetV2 Inverted Residual Block  (t = {t})",
+                 fontsize=13, fontweight="bold", pad=14)
+
+    # ── Input tensor stack ────────────────────────────────────────────────────
+    _stacked(ax, 0.1, 2.0, 1.1, 3.5, M,
+             "#dbeafe", "#1d4ed8", "Input", f"{H}x{W}x{M}")
+    _arr(ax, 1.35, 1.95, 3.75)
+
+    # ── Stage 1: Expand (1×1 PW, M → tM) ─────────────────────────────────────
+    _kbox(ax, 2.0, 2.5, 1.7, 2.5,
+          "#fef9c3", "#ca8a04",
+          f"1×1  M→{tM}",
+          f"Expand · {fmt(mp['expand'])} params")
+    ax.text(2.85, 5.3, "① Expand", ha="center", fontsize=8,
+            fontweight="bold", color="#ca8a04")
+    _arr(ax, 3.75, 4.25, 3.75)
+
+    # ── Stage 2: Depthwise (Dk×Dk, tM channels) ──────────────────────────────
+    _kbox(ax, 4.3, 2.5, 1.7, 2.5,
+          "#fce7f3", "#db2777",
+          f"{Dk}×{Dk}  ch={tM}",
+          f"DW · {fmt(mp['dw'])} params")
+    ax.text(5.15, 5.3, "② Depthwise", ha="center", fontsize=8,
+            fontweight="bold", color="#db2777")
+    _arr(ax, 6.05, 6.55, 3.75)
+
+    # ── Stage 3: Project (1×1 PW, tM → N) ────────────────────────────────────
+    _kbox(ax, 6.6, 2.5, 1.7, 2.5,
+          "#d1fae5", "#059669",
+          f"1×1  {tM}→N",
+          f"Project · {fmt(mp['project'])} params")
+    ax.text(7.45, 5.3, "③ Project", ha="center", fontsize=8,
+            fontweight="bold", color="#059669")
+    _arr(ax, 8.35, 8.85, 3.75)
+
+    # ── Output tensor stack ───────────────────────────────────────────────────
+    _stacked(ax, 8.9, 2.0, 0.75, 3.5, N,
+             "#dcfce7", "#16a34a", "Output", f"{H}x{W}x{N}")
+
+    # ── Intermediate tensor dimension labels ──────────────────────────────────
+    for xc in (4.0, 6.3):
+        ax.text(xc, 1.7, f"H×W×{tM}", ha="center", fontsize=7,
+                color=_T, style="italic")
+
+    # ── Residual skip connection (shown only when M == N, stride-1 block) ─────
+    if M == N:
+        from matplotlib.patches import FancyArrowPatch
+        skip = FancyArrowPatch(
+            (0.65, 6.6), (9.2, 6.6),
+            arrowstyle="-|>",
+            connectionstyle="arc3,rad=0.0",
+            color="#6366f1", lw=1.8, linestyle="dashed",
+        )
+        ax.add_patch(skip)
+        ax.text(4.95, 7.05,
+                "Residual skip  (M = N, stride = 1  →  output += input)",
+                ha="center", fontsize=7.5, color="#6366f1", style="italic")
+    else:
+        ax.text(4.95, 6.85, "No skip  (M ≠ N  →  projection-only block)",
+                ha="center", fontsize=7.5, color=_T, style="italic")
+
+    # ── Bottom badge ──────────────────────────────────────────────────────────
+    ax.text(5.0, 0.75,
+            f"3-STAGE INVERTED BOTTLENECK  ·  t = {t}  ·  expanded ch = {tM}",
+            ha="center", fontsize=8.5, fontweight="bold", color="#7c3aed",
+            bbox=dict(boxstyle="round,pad=0.4",
+                      facecolor=(0.49, 0.23, 0.93, 0.10),
+                      edgecolor="#7c3aed", lw=1.4))
+    plt.tight_layout()
+    return fig
+
+
+def draw_mbv2_stage_breakdown(M: int, N: int, Dk: int,
+                               H: int, W: int, t: int, s_f: int) -> plt.Figure:
+    """
+    Horizontal bar chart: per-stage MBv2 FLOPs as % of a standard conv baseline.
+    Provides an at-a-glance view of where the compute budget is spent.
+    """
+    mf     = mbv2_flops(M, N, Dk, H, W, t)
+    stages = ["Expand\n(1×1 PW)", "Depthwise\n(Dk×Dk)", "Project\n(1×1 PW)"]
+    fracs  = [mf["expand"] / s_f * 100,
+              mf["dw"]     / s_f * 100,
+              mf["project"] / s_f * 100]
+    colors = ["#ca8a04", "#db2777", "#059669"]
+
+    fig, ax = plt.subplots(figsize=(7, 2.2))
+    bars = ax.barh(stages, fracs, color=colors,
+                   edgecolor="none", linewidth=0, height=0.5, zorder=3)
+    ax.set_xlim(0, max(fracs) * 1.30)
+    ax.set_xlabel("% of Standard Conv FLOPs", fontsize=9)
+    ax.set_title("MBv2 Stage-wise FLOPs as % of Standard Conv",
+                 fontsize=10, fontweight="bold", pad=8)
+    ax.grid(axis="x", zorder=0)
+    ax.tick_params(labelsize=8)
+    for b, v in zip(bars, fracs):
+        ax.text(v + max(fracs) * 0.02,
+                b.get_y() + b.get_height() / 2,
+                f"{v:.2f}%", va="center",
+                fontsize=9, fontweight="bold", color=_T)
+    plt.tight_layout()
+    return fig
+
+
 # ------------------------------------------------------------------------------
 # 6.  SIDEBAR -- hyperparameter controls
 # ------------------------------------------------------------------------------
 
 with st.sidebar:
     st.markdown(
-        '<p class="grad-heading" style="font-size:1.3rem;">Hyper-Parameters</p>',
+        '<p class="grad-heading" style="font-size:1.3rem;">Simulator Controls</p>',
         unsafe_allow_html=True,
     )
     st.markdown("---")
+
+    # ── Architecture Mode selector ─────────────────────────────────────────────
+    # Drives which computation path and diagrams are rendered throughout the app.
+    arch_mode = st.radio(
+        "Architecture Mode",
+        options=[
+            "Basic Convolution (Standard vs. DWS)",
+            "MobileNetV2 Inverted Residual Block",
+        ],
+        index=0,
+        help=(
+            "Basic: compares a standard Dk×Dk conv against a two-stage "
+            "Depthwise Separable conv (Howard et al., MobileNets 2017).\n\n"
+            "MobileNetV2: simulates the full Inverted Residual Bottleneck "
+            "block (Sandler et al., 2018) — Expand → Depthwise → Project."
+        ),
+    )
+    _mbv2_mode = (arch_mode == "MobileNetV2 Inverted Residual Block")
+
+    st.markdown("---")
+    st.markdown("**Hyper-Parameters**")
+
+    # ── Core sliders (always visible) ─────────────────────────────────────────
     M  = st.slider("Input Channels  (M)",   1, 512,  32, 1,
                    help="Number of channels in the input feature map.")
     N  = st.slider("Output Channels  (N)",  1, 512,  64, 1,
                    help="Number of channels produced by the convolution.")
     Dk = st.slider("Kernel Size  (D_K)",    1,  11,   3, 2,
-                   help="Square kernel dimension Dk x Dk. Odd values only.")
+                   help="Square kernel dimension Dk × Dk. Odd values only.")
     H  = st.slider("Spatial Size  (H = W)", 4, 256,  56, 4,
-                   help="Feature map height = width. Same padding applied.")
+                   help="Feature map height = width. Same padding assumed.")
     W  = H
 
+    # ── Expansion factor (MBv2 mode only) ─────────────────────────────────────
+    if _mbv2_mode:
+        t = st.slider(
+            "Expansion Factor  (t)",
+            min_value=1, max_value=6, value=6, step=1,
+            help=(
+                "Channel multiplier for the internal expansion stage. "
+                "MobileNetV2 uses t = 6 for most blocks (t = 1 for the "
+                "first layer). Higher t gives richer intermediate features "
+                "at the cost of more parameters and FLOPs."
+            ),
+        )
+    else:
+        t = 1   # unused in Basic mode; set to a valid neutral value
+
+    # ── Active shape summary ───────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("**Active tensor shapes**")
-    st.markdown(f"Input:  `{H} x {W} x {M}`")
-    st.markdown(f"Output: `{H} x {W} x {N}`")
-    st.markdown(f"Kernel: `{Dk} x {Dk}`")
+    st.markdown(f"Input  : `{H} × {W} × {M}`")
+    if _mbv2_mode:
+        st.markdown(f"Expanded: `{H} × {W} × {t * M}`")
+    st.markdown(f"Output : `{H} × {W} × {N}`")
+    st.markdown(f"Kernel : `{Dk} × {Dk}`")
     st.markdown("---")
-    st.caption("University of Malta - Deep Learning\nCPU-only simulator - No GPU required")
+    st.caption("University of Malta · Deep Learning\nCPU-only simulator · No GPU required")
 
 
 # ------------------------------------------------------------------------------
 # 7.  LIVE CALCULATIONS
 # ------------------------------------------------------------------------------
 
-s_p    = std_params(M, N, Dk)
-s_f    = std_flops(M, N, Dk, H, W)
-d_p    = dws_params(M, N, Dk)
-d_f    = dws_flops(M, N, Dk, H, W)
-ratio_p = d_p["total"] / s_p
-ratio_f = d_f["total"] / s_f
+s_p = std_params(M, N, Dk)
+s_f = std_flops(M, N, Dk, H, W)
+
+# DWS always computed — needed by the PyTorch sandbox in Tab 3 regardless of mode.
+d_p = dws_params(M, N, Dk)
+d_f = dws_flops(M, N, Dk, H, W)
+
+if not _mbv2_mode:
+    cmp_p     = d_p
+    cmp_f     = d_f
+    cmp_label = "DW Separable"
+    r_th      = reduction_ratio(N, Dk)
+else:
+    cmp_p     = mbv2_params(M, N, Dk, t)
+    cmp_f     = mbv2_flops(M, N, Dk, H, W, t)
+    cmp_label = "MobileNetV2"
+    r_th      = mbv2_reduction_ratio(M, N, Dk, t)
+
+ratio_p = cmp_p["total"] / s_p
+ratio_f = cmp_f["total"] / s_f
 saved_p = (1 - ratio_p) * 100
 saved_f = (1 - ratio_f) * 100
-r_th    = reduction_ratio(N, Dk)
 
 
 # ------------------------------------------------------------------------------
 # 8.  HERO HEADER
 # ------------------------------------------------------------------------------
 
-st.markdown(
-    '<h1 class="grad-heading" style="font-size:2.5rem; text-align:center;">'
+_page_title = (
+    "MobileNetV2 Inverted Residual Block"
+    if _mbv2_mode else
     "Standard vs. Depthwise Separable Convolutions"
-    "</h1>",
+)
+_page_subtitle = (
+    "Inverted Residual Bottleneck Simulator"
+    if _mbv2_mode else
+    "Interactive Efficiency Simulator"
+)
+_cmp_p_label  = "MBv2 Params"  if _mbv2_mode else "DWS Params"
+_cmp_f_label  = "MBv2 FLOPs"   if _mbv2_mode else "DWS FLOPs"
+_ratio_help   = "t(M+Dk²+N)/(Dk²·N)"  if _mbv2_mode else "1/N + 1/Dk²"
+_savings_label = "Params Overhead" if saved_p < 0 else "Params Saved"
+
+st.markdown(
+    f'<h1 class="grad-heading" style="font-size:2.5rem; text-align:center;">'
+    f"{_page_title}"
+    f"</h1>",
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<p style="text-align:center; opacity:0.55; font-size:1rem; margin-bottom:1.4rem;">'
-    "Interactive Efficiency Simulator &nbsp;&#183;&nbsp; University of Malta"
-    " &nbsp;&#183;&nbsp; Deep Learning"
-    "</p>",
+    f'<p style="text-align:center; opacity:0.55; font-size:1rem; margin-bottom:1.4rem;">'
+    f"{_page_subtitle} &nbsp;&#183;&nbsp; University of Malta"
+    f" &nbsp;&#183;&nbsp; Deep Learning"
+    f"</p>",
     unsafe_allow_html=True,
 )
 
-# Summary metric row
+# Summary metric row — delta uses "inverse" so green = reduction, red = increase.
 m1, m2, m3, m4, m5, m6 = st.columns(6)
-m1.metric("Std. Params",  fmt(s_p))
-m2.metric("DWS Params",   fmt(d_p["total"]),
-          delta=f"-{saved_p:.1f}% vs Std", delta_color="normal")
-m3.metric("Std. FLOPs",   fmt(s_f))
-m4.metric("DWS FLOPs",    fmt(d_f["total"]),
-          delta=f"-{saved_f:.1f}% vs Std", delta_color="normal")
-m5.metric("Theory Ratio", f"{r_th:.4f}", help="1/N + 1/Dk^2")
-m6.metric("Params Saved", f"{saved_p:.1f}%")
+m1.metric("Std. Params",   fmt(s_p))
+m2.metric(_cmp_p_label,    fmt(cmp_p["total"]),
+          delta=f"{(ratio_p - 1) * 100:+.1f}% vs Std",
+          delta_color="inverse")
+m3.metric("Std. FLOPs",    fmt(s_f))
+m4.metric(_cmp_f_label,    fmt(cmp_f["total"]),
+          delta=f"{(ratio_f - 1) * 100:+.1f}% vs Std",
+          delta_color="inverse")
+m5.metric("Theory Ratio",  f"{r_th:.4f}", help=_ratio_help)
+m6.metric(_savings_label,  f"{abs(saved_p):.1f}%")
 st.markdown("---")
 
 
@@ -526,6 +773,7 @@ tab1, tab2, tab3 = st.tabs([
 # ==============================================================================
 with tab1:
 
+    # ── Architecture diagrams ─────────────────────────────────────────────────
     st.markdown('<span class="section-chip">Architecture Diagrams</span>',
                 unsafe_allow_html=True)
     col_l, col_r = st.columns(2)
@@ -534,70 +782,168 @@ with tab1:
         st.pyplot(fig_s, use_container_width=True)
         plt.close(fig_s)
     with col_r:
-        fig_d = draw_dws_diagram(M, N, Dk, H, W)
-        st.pyplot(fig_d, use_container_width=True)
-        plt.close(fig_d)
+        if _mbv2_mode:
+            fig_cmp = draw_mbv2_diagram(M, N, Dk, H, W, t)
+        else:
+            fig_cmp = draw_dws_diagram(M, N, Dk, H, W)
+        st.pyplot(fig_cmp, use_container_width=True)
+        plt.close(fig_cmp)
 
     st.markdown("---")
+
+    # ── Bar chart ─────────────────────────────────────────────────────────────
     st.markdown('<span class="section-chip">Performance Comparison</span>',
                 unsafe_allow_html=True)
-    fig_bars = draw_bar_chart(s_p, d_p["total"], s_f, d_f["total"])
+    _bar_cmp_label = "MobileNetV2\nBlock" if _mbv2_mode else "DW Separable\nConv"
+    fig_bars = draw_bar_chart(s_p, cmp_p["total"], s_f, cmp_f["total"],
+                              cmp_label=_bar_cmp_label)
     st.pyplot(fig_bars, use_container_width=True)
     plt.close(fig_bars)
 
     st.markdown("---")
-    st.markdown('<span class="section-chip">DWS Stage-wise FLOPs Breakdown</span>',
-                unsafe_allow_html=True)
-    fig_rb = draw_ratio_breakdown(M, N, Dk, H, W, s_f)
+
+    # ── Stage-wise FLOPs breakdown ────────────────────────────────────────────
+    if _mbv2_mode:
+        st.markdown('<span class="section-chip">MBv2 Stage-wise FLOPs Breakdown</span>',
+                    unsafe_allow_html=True)
+        fig_rb = draw_mbv2_stage_breakdown(M, N, Dk, H, W, t, s_f)
+    else:
+        st.markdown('<span class="section-chip">DWS Stage-wise FLOPs Breakdown</span>',
+                    unsafe_allow_html=True)
+        fig_rb = draw_ratio_breakdown(M, N, Dk, H, W, s_f)
     st.pyplot(fig_rb, use_container_width=True)
     plt.close(fig_rb)
 
     st.markdown("---")
+
+    # ── Numerical breakdown tables ────────────────────────────────────────────
     st.markdown('<span class="section-chip">Numerical Breakdown Tables</span>',
                 unsafe_allow_html=True)
     col_l, col_r = st.columns(2)
     with col_l:
         st.markdown("**Parameters**")
-        st.table({
-            "Component": [
-                "Standard Conv",
-                f"Depthwise  ({Dk}x{Dk}x{M})",
-                f"Pointwise  (1x1x{M}x{N})",
-                "DWS Total",
-            ],
-            "Count": [fmt(s_p), fmt(d_p["dw"]), fmt(d_p["pw"]), fmt(d_p["total"])],
-            "% of Std.": [
-                "100.00 %",
-                f"{d_p['dw'] / s_p * 100:.2f} %",
-                f"{d_p['pw'] / s_p * 100:.2f} %",
-                f"{ratio_p * 100:.2f} %",
-            ],
-        })
+        if _mbv2_mode:
+            st.table({
+                "Component": [
+                    "Standard Conv",
+                    f"① Expand  (1×1  M→{t*M})",
+                    f"② Depthwise  ({Dk}×{Dk}  ch={t*M})",
+                    f"③ Project  (1×1  {t*M}→N)",
+                    "MBv2 Total",
+                ],
+                "Count": [
+                    fmt(s_p),
+                    fmt(cmp_p["expand"]),
+                    fmt(cmp_p["dw"]),
+                    fmt(cmp_p["project"]),
+                    fmt(cmp_p["total"]),
+                ],
+                "% of Std.": [
+                    "100.00 %",
+                    f"{cmp_p['expand'] / s_p * 100:.2f} %",
+                    f"{cmp_p['dw']     / s_p * 100:.2f} %",
+                    f"{cmp_p['project']/ s_p * 100:.2f} %",
+                    f"{ratio_p * 100:.2f} %",
+                ],
+            })
+        else:
+            st.table({
+                "Component": [
+                    "Standard Conv",
+                    f"Depthwise  ({Dk}×{Dk}×{M})",
+                    f"Pointwise  (1×1×{M}×{N})",
+                    "DWS Total",
+                ],
+                "Count": [
+                    fmt(s_p),
+                    fmt(cmp_p["dw"]),
+                    fmt(cmp_p["pw"]),
+                    fmt(cmp_p["total"]),
+                ],
+                "% of Std.": [
+                    "100.00 %",
+                    f"{cmp_p['dw'] / s_p * 100:.2f} %",
+                    f"{cmp_p['pw'] / s_p * 100:.2f} %",
+                    f"{ratio_p * 100:.2f} %",
+                ],
+            })
     with col_r:
         st.markdown("**FLOPs**")
-        st.table({
-            "Component": [
-                "Standard Conv",
-                "Depthwise stage",
-                "Pointwise stage",
-                "DWS Total",
-            ],
-            "FLOPs": [fmt(s_f), fmt(d_f["dw"]), fmt(d_f["pw"]), fmt(d_f["total"])],
-            "% of Std.": [
-                "100.00 %",
-                f"{d_f['dw'] / s_f * 100:.2f} %",
-                f"{d_f['pw'] / s_f * 100:.2f} %",
-                f"{ratio_f * 100:.2f} %",
-            ],
-        })
+        if _mbv2_mode:
+            st.table({
+                "Component": [
+                    "Standard Conv",
+                    "① Expand stage",
+                    "② Depthwise stage",
+                    "③ Project stage",
+                    "MBv2 Total",
+                ],
+                "FLOPs": [
+                    fmt(s_f),
+                    fmt(cmp_f["expand"]),
+                    fmt(cmp_f["dw"]),
+                    fmt(cmp_f["project"]),
+                    fmt(cmp_f["total"]),
+                ],
+                "% of Std.": [
+                    "100.00 %",
+                    f"{cmp_f['expand'] / s_f * 100:.2f} %",
+                    f"{cmp_f['dw']     / s_f * 100:.2f} %",
+                    f"{cmp_f['project']/ s_f * 100:.2f} %",
+                    f"{ratio_f * 100:.2f} %",
+                ],
+            })
+        else:
+            st.table({
+                "Component": [
+                    "Standard Conv",
+                    "Depthwise stage",
+                    "Pointwise stage",
+                    "DWS Total",
+                ],
+                "FLOPs": [
+                    fmt(s_f),
+                    fmt(cmp_f["dw"]),
+                    fmt(cmp_f["pw"]),
+                    fmt(cmp_f["total"]),
+                ],
+                "% of Std.": [
+                    "100.00 %",
+                    f"{cmp_f['dw'] / s_f * 100:.2f} %",
+                    f"{cmp_f['pw'] / s_f * 100:.2f} %",
+                    f"{ratio_f * 100:.2f} %",
+                ],
+            })
 
     st.markdown("---")
+
+    # ── Cost fraction bar / callout ───────────────────────────────────────────
     st.markdown('<span class="section-chip">Compute Cost Fraction</span>',
                 unsafe_allow_html=True)
-    st.markdown(
-        f"DWS uses **{r_th * 100:.2f}%** of Standard Conv compute "
-        f"(saving **{(1 - r_th) * 100:.2f}%**):"
-    )
+    if _mbv2_mode:
+        if r_th <= 1.0:
+            st.markdown(
+                f"MBv2 uses **{r_th * 100:.2f}%** of Standard Conv compute "
+                f"(saving **{(1 - r_th) * 100:.2f}%**):"
+            )
+        else:
+            st.markdown(
+                f'<div class="insight-box">'
+                f"With t = <strong>{t}</strong>, M = <strong>{M}</strong>, "
+                f"N = <strong>{N}</strong>, the MBv2 block costs "
+                f"<strong>{r_th * 100:.2f}%</strong> of a standard conv — "
+                f"<strong>{(r_th - 1) * 100:.2f}%</strong> more expensive. "
+                f"MBv2's efficiency advantage comes from architectural quality "
+                f"(residual flow, high-dimensional DW space), not raw parameter "
+                f"compression. Reduce t or increase N to bring the ratio below 1."
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown(
+            f"DWS uses **{r_th * 100:.2f}%** of Standard Conv compute "
+            f"(saving **{(1 - r_th) * 100:.2f}%**):"
+        )
     st.progress(float(np.clip(r_th, 0.0, 1.0)))
 
 
@@ -608,26 +954,26 @@ with tab2:
 
     col_l, col_r = st.columns(2)
 
-    # ── Standard Convolution ──────────────────────────────────────────────────
+    # ── Standard Convolution (always shown) ───────────────────────────────────
     with col_l:
         st.markdown('<h3 class="grad-heading">Standard Convolution</h3>',
                     unsafe_allow_html=True)
 
         st.markdown(
-            '<div class="formula-card"><strong>Parameters</strong> -- a single volumetric '
+            '<div class="formula-card"><strong>Parameters</strong> — a single volumetric '
             'kernel of depth M is replicated N times (one per output channel).</div>',
             unsafe_allow_html=True)
-        st.latex(r"\text{Params}_{\text{std}} = D_K \times D_K \times M \times N")
+        st.latex(r"\text{Params}_{\text{std}} = D_K^2 \times M \times N")
         st.latex(
             rf"\text{{Params}}_{{\text{{std}}}} "
-            rf"= {Dk} \times {Dk} \times {M} \times {N} "
+            rf"= {Dk}^2 \times {M} \times {N} "
             rf"= \mathbf{{{fmt(s_p)}}}")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
         st.markdown(
-            '<div class="formula-card"><strong>FLOPs</strong> -- at each H x W output '
-            'location, every output channel accumulates D_K^2 * M multiply-adds (x2 ops).</div>',
+            '<div class="formula-card"><strong>FLOPs</strong> — at each H×W output '
+            'location every output channel accumulates D_K² · M multiply-adds (×2 ops).</div>',
             unsafe_allow_html=True)
         st.latex(
             r"\text{FLOPs}_{\text{std}} = 2 \cdot D_K^2 \cdot M \cdot N \cdot H \cdot W")
@@ -636,90 +982,213 @@ with tab2:
             rf"= 2 \times {Dk}^2 \times {M} \times {N} \times {H} \times {W} "
             rf"= \mathbf{{{fmt(s_f)}}}")
 
-    # ── Depthwise Separable Convolution ───────────────────────────────────────
+    # ── Right column: DWS or MBv2 formulas ────────────────────────────────────
     with col_r:
-        st.markdown('<h3 class="grad-heading">Depthwise Separable Conv.</h3>',
-                    unsafe_allow_html=True)
+        if not _mbv2_mode:
+            # ── Depthwise Separable Convolution ──────────────────────────────
+            st.markdown('<h3 class="grad-heading">Depthwise Separable Conv.</h3>',
+                        unsafe_allow_html=True)
 
-        st.markdown(
-            '<div class="formula-card"><strong>Stage 1 -- Depthwise</strong>: one Dk x Dk '
-            'spatial filter per input channel (groups=M). No cross-channel mixing yet.</div>',
-            unsafe_allow_html=True)
-        st.latex(r"\text{Params}_{\text{DW}} = D_K^2 \times M")
-        st.latex(rf"\text{{Params}}_{{\text{{DW}}}} = {Dk}^2 \times {M} = {fmt(d_p['dw'])}")
-        st.latex(r"\text{FLOPs}_{\text{DW}} = 2 \cdot D_K^2 \cdot M \cdot H \cdot W")
-        st.latex(rf"\text{{FLOPs}}_{{\text{{DW}}}} = {fmt(d_f['dw'])}")
+            st.markdown(
+                '<div class="formula-card"><strong>Stage 1 — Depthwise</strong>: '
+                'one Dk×Dk spatial filter per input channel (groups=M). '
+                'No cross-channel mixing yet.</div>',
+                unsafe_allow_html=True)
+            st.latex(r"\text{Params}_{\text{DW}} = D_K^2 \times M")
+            st.latex(rf"\text{{Params}}_{{\text{{DW}}}} = {Dk}^2 \times {M} = {fmt(d_p['dw'])}")
+            st.latex(r"\text{FLOPs}_{\text{DW}} = 2 \cdot D_K^2 \cdot M \cdot H \cdot W")
+            st.latex(rf"\text{{FLOPs}}_{{\text{{DW}}}} = {fmt(d_f['dw'])}")
 
-        st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
 
-        st.markdown(
-            '<div class="formula-card"><strong>Stage 2 -- Pointwise</strong>: 1x1 conv '
-            'mixes the M depthwise outputs into N channels (pure channel combination).</div>',
-            unsafe_allow_html=True)
-        st.latex(r"\text{Params}_{\text{PW}} = M \times N")
-        st.latex(rf"\text{{Params}}_{{\text{{PW}}}} = {M} \times {N} = {fmt(d_p['pw'])}")
-        st.latex(r"\text{FLOPs}_{\text{PW}} = 2 \cdot M \cdot N \cdot H \cdot W")
-        st.latex(rf"\text{{FLOPs}}_{{\text{{PW}}}} = {fmt(d_f['pw'])}")
+            st.markdown(
+                '<div class="formula-card"><strong>Stage 2 — Pointwise</strong>: '
+                '1×1 conv mixes the M depthwise outputs into N channels.</div>',
+                unsafe_allow_html=True)
+            st.latex(r"\text{Params}_{\text{PW}} = M \times N")
+            st.latex(rf"\text{{Params}}_{{\text{{PW}}}} = {M} \times {N} = {fmt(d_p['pw'])}")
+            st.latex(r"\text{FLOPs}_{\text{PW}} = 2 \cdot M \cdot N \cdot H \cdot W")
+            st.latex(rf"\text{{FLOPs}}_{{\text{{PW}}}} = {fmt(d_f['pw'])}")
 
-        st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown("<br>", unsafe_allow_html=True)
 
-        st.markdown('<div class="formula-card"><strong>DWS Totals</strong></div>',
-                    unsafe_allow_html=True)
-        st.latex(r"\text{Params}_{\text{DWS}} = D_K^2 M + MN")
-        st.latex(
-            rf"\text{{Params}}_{{\text{{DWS}}}} "
-            rf"= {fmt(d_p['dw'])} + {fmt(d_p['pw'])} "
-            rf"= \mathbf{{{fmt(d_p['total'])}}}")
-        st.latex(r"\text{FLOPs}_{\text{DWS}} = 2MHW\!\left(D_K^2 + N\right)")
-        st.latex(rf"\text{{FLOPs}}_{{\text{{DWS}}}} = \mathbf{{{fmt(d_f['total'])}}}")
+            st.markdown('<div class="formula-card"><strong>DWS Totals</strong></div>',
+                        unsafe_allow_html=True)
+            st.latex(r"\text{Params}_{\text{DWS}} = D_K^2 M + MN")
+            st.latex(
+                rf"\text{{Params}}_{{\text{{DWS}}}} "
+                rf"= {fmt(d_p['dw'])} + {fmt(d_p['pw'])} "
+                rf"= \mathbf{{{fmt(d_p['total'])}}}")
+            st.latex(r"\text{FLOPs}_{\text{DWS}} = 2MHW\!\left(D_K^2 + N\right)")
+            st.latex(rf"\text{{FLOPs}}_{{\text{{DWS}}}} = \mathbf{{{fmt(d_f['total'])}}}")
+
+        else:
+            # ── MobileNetV2 Inverted Residual Block ───────────────────────────
+            tM = t * M
+            st.markdown('<h3 class="grad-heading">MobileNetV2 Inverted Residual</h3>',
+                        unsafe_allow_html=True)
+
+            st.markdown(
+                f'<div class="formula-card"><strong>① Expand  (1×1 PW, M → tM = {tM})</strong>: '
+                f'pointwise conv widens the channel dimension by expansion factor t.</div>',
+                unsafe_allow_html=True)
+            st.latex(r"\text{Params}_{\text{exp}} = M \times tM = t M^2")
+            st.latex(
+                rf"\text{{Params}}_{{\text{{exp}}}} "
+                rf"= {t} \times {M}^2 = {fmt(cmp_p['expand'])}")
+            st.latex(r"\text{FLOPs}_{\text{exp}} = 2 \cdot M \cdot tM \cdot H \cdot W")
+            st.latex(rf"\text{{FLOPs}}_{{\text{{exp}}}} = {fmt(cmp_f['expand'])}")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            st.markdown(
+                f'<div class="formula-card"><strong>② Depthwise  (Dk×Dk, tM = {tM} channels)</strong>: '
+                f'spatial filtering operates in the expanded high-dimensional space.</div>',
+                unsafe_allow_html=True)
+            st.latex(r"\text{Params}_{\text{DW}} = D_K^2 \times tM")
+            st.latex(
+                rf"\text{{Params}}_{{\text{{DW}}}} "
+                rf"= {Dk}^2 \times {tM} = {fmt(cmp_p['dw'])}")
+            st.latex(r"\text{FLOPs}_{\text{DW}} = 2 \cdot D_K^2 \cdot tM \cdot H \cdot W")
+            st.latex(rf"\text{{FLOPs}}_{{\text{{DW}}}} = {fmt(cmp_f['dw'])}")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            st.markdown(
+                f'<div class="formula-card"><strong>③ Project  (1×1 PW, tM → N)</strong>: '
+                f'pointwise conv compresses back to the target width N. '
+                f'No activation (linear bottleneck).</div>',
+                unsafe_allow_html=True)
+            st.latex(r"\text{Params}_{\text{proj}} = tM \times N")
+            st.latex(
+                rf"\text{{Params}}_{{\text{{proj}}}} "
+                rf"= {tM} \times {N} = {fmt(cmp_p['project'])}")
+            st.latex(r"\text{FLOPs}_{\text{proj}} = 2 \cdot tM \cdot N \cdot H \cdot W")
+            st.latex(rf"\text{{FLOPs}}_{{\text{{proj}}}} = {fmt(cmp_f['project'])}")
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            st.markdown('<div class="formula-card"><strong>MBv2 Block Totals</strong></div>',
+                        unsafe_allow_html=True)
+            st.latex(
+                r"\text{Params}_{\text{MBv2}} = tM^2 + D_K^2 tM + tMN "
+                r"= tM\!\left(M + D_K^2 + N\right)")
+            st.latex(
+                rf"\text{{Params}}_{{\text{{MBv2}}}} "
+                rf"= {t} \times {M} \times ({M} + {Dk}^2 + {N}) "
+                rf"= \mathbf{{{fmt(cmp_p['total'])}}}")
+            st.latex(
+                r"\text{FLOPs}_{\text{MBv2}} = 2 \cdot tM \cdot H \cdot W"
+                r"\!\left(M + D_K^2 + N\right)")
+            st.latex(
+                rf"\text{{FLOPs}}_{{\text{{MBv2}}}} = \mathbf{{{fmt(cmp_f['total'])}}}")
 
     st.markdown("---")
 
-    # ── Reduction ratio full derivation ───────────────────────────────────────
-    st.markdown(
-        '<h3 class="grad-heading" style="text-align:center;">'
-        "Efficiency Reduction Ratio  (Howard et al., MobileNets 2017)"
-        "</h3>",
-        unsafe_allow_html=True)
-
-    col_eq, col_num = st.columns([1.5, 0.5])
-    with col_eq:
-        st.latex(
-            r"\frac{\text{Cost}_{\text{DWS}}}{\text{Cost}_{\text{Std}}} "
-            r"= \frac{D_K^2 \cdot M \cdot H \cdot W + M \cdot N \cdot H \cdot W}"
-            r"{D_K^2 \cdot M \cdot N \cdot H \cdot W}")
-        st.latex(
-            r"= \frac{D_K^2 \cdot M \cdot H \cdot W}{D_K^2 \cdot M \cdot N \cdot H \cdot W}"
-            r"+ \frac{M \cdot N \cdot H \cdot W}{D_K^2 \cdot M \cdot N \cdot H \cdot W}")
-        st.latex(
-            r"\boxed{\dfrac{\text{Cost}_{\text{DWS}}}{\text{Cost}_{\text{Std}}} "
-            r"= \dfrac{1}{N} + \dfrac{1}{D_K^2}}")
-        st.latex(
-            rf"\frac{{1}}{{{N}}} + \frac{{1}}{{{Dk}^2}} "
-            rf"= {1/N:.5f} + {1/Dk**2:.5f} "
-            rf"= \mathbf{{{r_th:.5f}}}")
+    # ── Ratio derivation — adapts to active mode ───────────────────────────────
+    if not _mbv2_mode:
+        # ── DWS reduction ratio ────────────────────────────────────────────────
         st.markdown(
-            f'<div class="insight-box">'
-            f"With <strong>N={N}</strong> output channels and a "
-            f"<strong>{Dk}&times;{Dk}</strong> kernel, DWS costs only "
-            f"<strong>{r_th * 100:.2f}%</strong> of standard conv -- a "
-            f"<strong>{(1 - r_th) * 100:.2f}%</strong> reduction in both parameters "
-            f"and FLOPs.  As N grows, the 1/N term vanishes and savings "
-            f"asymptotically approach (1 - 1/D_K&sup2;)."
-            f"</div>",
+            '<h3 class="grad-heading" style="text-align:center;">'
+            "Efficiency Reduction Ratio  (Howard et al., MobileNets 2017)"
+            "</h3>",
             unsafe_allow_html=True)
 
-    with col_num:
-        st.metric("Theory Ratio", f"{r_th:.5f}",  help="1/N + 1/Dk^2")
-        st.metric("Param Ratio",  f"{ratio_p:.5f}", help="DWS params / Std params")
-        st.metric("FLOP Ratio",   f"{ratio_f:.5f}", help="DWS FLOPs / Std FLOPs")
-        match = abs(r_th - ratio_p) < 1e-9
-        if match:
-            st.success("Ratios match analytically")
-        else:
-            st.error("Ratio mismatch")
-        st.progress(float(np.clip(r_th, 0.0, 1.0)))
-        st.caption(f"{r_th * 100:.2f}% of Std. cost")
+        col_eq, col_num = st.columns([1.5, 0.5])
+        with col_eq:
+            st.latex(
+                r"\frac{\text{Cost}_{\text{DWS}}}{\text{Cost}_{\text{Std}}} "
+                r"= \frac{D_K^2 \cdot M \cdot H \cdot W + M \cdot N \cdot H \cdot W}"
+                r"{D_K^2 \cdot M \cdot N \cdot H \cdot W}")
+            st.latex(
+                r"= \frac{D_K^2 \cdot M \cdot H \cdot W}{D_K^2 \cdot M \cdot N \cdot H \cdot W}"
+                r"+ \frac{M \cdot N \cdot H \cdot W}{D_K^2 \cdot M \cdot N \cdot H \cdot W}")
+            st.latex(
+                r"\boxed{\dfrac{\text{Cost}_{\text{DWS}}}{\text{Cost}_{\text{Std}}} "
+                r"= \dfrac{1}{N} + \dfrac{1}{D_K^2}}")
+            st.latex(
+                rf"\frac{{1}}{{{N}}} + \frac{{1}}{{{Dk}^2}} "
+                rf"= {1/N:.5f} + {1/Dk**2:.5f} "
+                rf"= \mathbf{{{r_th:.5f}}}")
+            st.markdown(
+                f'<div class="insight-box">'
+                f"With <strong>N={N}</strong> output channels and a "
+                f"<strong>{Dk}&times;{Dk}</strong> kernel, DWS costs only "
+                f"<strong>{r_th * 100:.2f}%</strong> of standard conv — a "
+                f"<strong>{(1 - r_th) * 100:.2f}%</strong> reduction in both parameters "
+                f"and FLOPs.  As N grows the 1/N term vanishes and savings "
+                f"asymptotically approach (1 − 1/D_K²)."
+                f"</div>",
+                unsafe_allow_html=True)
+
+        with col_num:
+            st.metric("Theory Ratio", f"{r_th:.5f}",  help="1/N + 1/Dk²")
+            st.metric("Param Ratio",  f"{ratio_p:.5f}", help="DWS params / Std params")
+            st.metric("FLOP Ratio",   f"{ratio_f:.5f}", help="DWS FLOPs / Std FLOPs")
+            match = abs(r_th - ratio_p) < 1e-9
+            if match:
+                st.success("Ratios match analytically")
+            else:
+                st.error("Ratio mismatch")
+            st.progress(float(np.clip(r_th, 0.0, 1.0)))
+            st.caption(f"{r_th * 100:.2f}% of Std. cost")
+
+    else:
+        # ── MBv2 cost ratio derivation ─────────────────────────────────────────
+        tM = t * M
+        st.markdown(
+            '<h3 class="grad-heading" style="text-align:center;">'
+            "Cost Ratio vs. Standard Conv  (Sandler et al., MobileNetV2 2018)"
+            "</h3>",
+            unsafe_allow_html=True)
+
+        col_eq, col_num = st.columns([1.5, 0.5])
+        with col_eq:
+            st.latex(
+                r"\frac{\text{Params}_{\text{MBv2}}}{\text{Params}_{\text{Std}}} "
+                r"= \frac{tM\!\left(M + D_K^2 + N\right)}{D_K^2 \cdot M \cdot N}")
+            st.latex(
+                r"\boxed{\text{Ratio} = \frac{t\!\left(M + D_K^2 + N\right)}{D_K^2 \cdot N}}")
+            st.latex(
+                rf"\text{{Ratio}} = "
+                rf"\frac{{{t} \times ({M} + {Dk}^2 + {N})}}{{{Dk}^2 \times {N}}} "
+                rf"= \mathbf{{{r_th:.5f}}}")
+
+            if r_th > 1.0:
+                st.markdown(
+                    f'<div class="insight-box">'
+                    f"The ratio <strong>{r_th:.4f} &gt; 1</strong> means this MBv2 "
+                    f"block uses <strong>{(r_th - 1) * 100:.1f}% more</strong> parameters "
+                    f"than a plain {Dk}&times;{Dk} standard conv with the same I/O shape. "
+                    f"MobileNetV2's efficiency benefit is <em>architectural</em>: the "
+                    f"inverted bottleneck maintains a rich high-dimensional space for "
+                    f"spatial filtering and the residual connection (when M = N) preserves "
+                    f"gradient flow — gains not captured by the raw parameter count alone. "
+                    f"To bring the ratio below 1, reduce t or increase N."
+                    f"</div>",
+                    unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    f'<div class="insight-box">'
+                    f"The ratio <strong>{r_th:.4f} &lt; 1</strong> — this configuration "
+                    f"is also cheaper in raw parameters than a standard conv. "
+                    f"This occurs when N is large relative to t&times;(M + D_K² + N)."
+                    f"</div>",
+                    unsafe_allow_html=True)
+
+        with col_num:
+            st.metric("Ratio (MBv2/Std)", f"{r_th:.5f}", help="t(M+Dk²+N)/(Dk²·N)")
+            st.metric("Param Ratio",      f"{ratio_p:.5f}", help="actual params ratio")
+            st.metric("FLOP Ratio",       f"{ratio_f:.5f}", help="actual FLOPs ratio")
+            match = abs(r_th - ratio_p) < 1e-9
+            if match:
+                st.success("Formula matches exactly")
+            else:
+                st.error("Ratio mismatch")
+            skip_status = "Yes  (M = N)" if M == N else "No  (M ≠ N)"
+            st.metric("Residual Skip", skip_status)
+            st.progress(float(np.clip(r_th, 0.0, 1.0)))
+            st.caption(f"{r_th * 100:.2f}% of Std. cost")
 
 
 # ==============================================================================
