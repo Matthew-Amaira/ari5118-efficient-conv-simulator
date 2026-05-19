@@ -172,6 +172,26 @@ hr { border-color: rgba(128, 128, 128, 0.2) !important; }
     margin: 1rem 0;
     font-size: 0.93rem;
 }
+
+/* ── sidebar paired controls: align slider track and number-input box ─────
+   When label_visibility="collapsed" is used, Streamlit still reserves a small
+   gap above widgets.  These rules remove that reserved space so the slider in
+   col1 and the number-input in col2 sit on exactly the same horizontal baseline.
+   The padding-top on the number-input container nudges it down to match the
+   visual midpoint of the slider track (~6 px offset at standard DPI).           ── */
+[data-testid="stSidebar"] .stSlider {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
+}
+[data-testid="stSidebar"] .stNumberInput {
+    padding-top: 0.35rem !important;
+    margin-top: 0 !important;
+}
+/* Remove the empty label placeholder that "collapsed" leaves as a 0-height div. */
+[data-testid="stSidebar"] .stSlider [data-testid="stWidgetLabel"],
+[data-testid="stSidebar"] .stNumberInput [data-testid="stWidgetLabel"] {
+    display: none !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -309,6 +329,14 @@ def fmt(n: int) -> str:
     if n >= 1_000:
         return f"{n / 1e3:.2f} K"
     return str(n)
+
+
+def _nearest_snap(v: int, lo: int, step: int, hi: int) -> int:
+    """Round v to the nearest valid slider tick (lo + n*step), clamped to [lo, hi].
+    Uses round-half-up (not Python's banker's rounding) to break ties consistently.
+    """
+    n = int((v - lo + step // 2) // step)
+    return max(lo, min(hi, lo + n * step))
 
 
 # ------------------------------------------------------------------------------
@@ -636,8 +664,80 @@ def draw_mbv2_stage_breakdown(M: int, N: int, Dk: int,
 
 
 # ------------------------------------------------------------------------------
-# 6.  SIDEBAR -- hyperparameter controls
+# 6.  SIDEBAR — hyperparameter controls
+# Layout rule: every parameter has its own markdown label rendered above a
+# single st.columns([3, 1.2]) row.  The slider sits in col1 (label hidden so
+# the row has no extra vertical space from a second label) and the precision
+# number_input sits in col2 (label also hidden, collapsed, no offset).
+# This keeps every control on the same horizontal plane with no caption clutter.
 # ------------------------------------------------------------------------------
+
+# ── Session-state defaults (initialised once per browser session) ──────────
+_PARAM_DEFAULTS: dict = {
+    "M":  32, "_M_sl":  32, "_M_nb":  32,
+    "N":  64, "_N_sl":  64, "_N_nb":  64,
+    "H":  56, "_H_sl":  56, "_H_nb":  56,
+    "Dk":  3, "_Dk_sl":  3, "_Dk_nb":  3,
+    "t":   6, "_t_sl":   6, "_t_nb":   6,
+}
+for _k, _v in _PARAM_DEFAULTS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+
+# ── Two-way sync callbacks ─────────────────────────────────────────────────
+# Slider → write canonical + mirror to number_input.
+# number_input → clamp, write canonical, snap slider to nearest valid tick.
+
+def _on_M_sl():
+    st.session_state["M"]     = st.session_state["_M_sl"]
+    st.session_state["_M_nb"] = st.session_state["_M_sl"]
+
+def _on_M_nb():
+    v = max(1, min(512, int(st.session_state["_M_nb"])))
+    st.session_state["M"]     = v
+    st.session_state["_M_sl"] = _nearest_snap(v, 16, 16, 512)
+
+
+def _on_N_sl():
+    st.session_state["N"]     = st.session_state["_N_sl"]
+    st.session_state["_N_nb"] = st.session_state["_N_sl"]
+
+def _on_N_nb():
+    v = max(1, min(512, int(st.session_state["_N_nb"])))
+    st.session_state["N"]     = v
+    st.session_state["_N_sl"] = _nearest_snap(v, 16, 16, 512)
+
+
+def _on_Dk_sl():
+    st.session_state["Dk"]     = st.session_state["_Dk_sl"]
+    st.session_state["_Dk_nb"] = st.session_state["_Dk_sl"]
+
+def _on_Dk_nb():
+    v = max(1, min(11, int(st.session_state["_Dk_nb"])))
+    st.session_state["Dk"]     = v
+    st.session_state["_Dk_sl"] = _nearest_snap(v, 1, 2, 11)
+
+
+def _on_H_sl():
+    st.session_state["H"]     = st.session_state["_H_sl"]
+    st.session_state["_H_nb"] = st.session_state["_H_sl"]
+
+def _on_H_nb():
+    v = max(1, min(512, int(st.session_state["_H_nb"])))
+    st.session_state["H"]     = v
+    st.session_state["_H_sl"] = _nearest_snap(v, 7, 7, 224)
+
+
+def _on_t_sl():
+    st.session_state["t"]     = st.session_state["_t_sl"]
+    st.session_state["_t_nb"] = st.session_state["_t_sl"]
+
+def _on_t_nb():
+    v = max(1, min(6, int(st.session_state["_t_nb"])))
+    st.session_state["t"]     = v
+    st.session_state["_t_sl"] = v   # step=1: every integer is a valid tick
+
 
 with st.sidebar:
     st.markdown(
@@ -646,8 +746,7 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    # ── Architecture Mode selector ─────────────────────────────────────────────
-    # Drives which computation path and diagrams are rendered throughout the app.
+    # ── Architecture Mode ──────────────────────────────────────────────────────
     arch_mode = st.radio(
         "Architecture Mode",
         options=[
@@ -664,95 +763,133 @@ with st.sidebar:
     )
     _mbv2_mode = (arch_mode == "MobileNetV2 Inverted Residual Block")
 
+    # ── Hyper-parameter section header ────────────────────────────────────────
     st.markdown("---")
-    st.markdown("**Hyper-Parameters**")
+    st.markdown('<span class="section-chip">Hyper-Parameters</span>',
+                unsafe_allow_html=True)
     st.caption(
-        "Sliders snap to standard DL dimensions (×16 for channels, ×7 for "
-        "spatial). Type any exact value in the right-hand box — it overrides "
-        "the snap step and is used for all calculations."
+        "Sliders snap to standard DL dimensions. "
+        "Type any exact value in the right-hand box."
     )
 
     # ── Input Channels (M) ────────────────────────────────────────────────────
-    # step=16 aligns with power-of-2 filter counts used in every major backbone
-    # (ResNet: 64/128/256/512, MobileNet: 16/32/64/96/…).
-    M_snap = st.slider(
-        "Input Channels  (M)",
-        min_value=16, max_value=512, value=32, step=16,
-        help="Snap step = 16 — covers all standard layer widths (16, 32, 64, 128, 256, 512).",
-    )
-    _sl, _nb = st.columns([3, 1])
-    _sl.caption("← drag to snap · type exact →")
-    M = _nb.number_input(
-        "M exact", min_value=1, max_value=512, value=M_snap, step=1,
+    st.markdown("**Input Channels (M)**")
+    _c1, _c2 = st.columns([3, 1.2])
+    _c1.slider(
+        "M_slider", min_value=16, max_value=512, step=16,
+        key="_M_sl", on_change=_on_M_sl,
         label_visibility="collapsed",
-        help="Enter any exact channel count. Moving the slider above will reset this field.",
+        help="Snap step = 16 — standard layer widths: 16, 32, 64, 128, 256, 512.",
     )
+    _c2.number_input(
+        "M_input", min_value=1, max_value=512, step=1,
+        key="_M_nb", on_change=_on_M_nb,
+        label_visibility="collapsed",
+        help="Type any exact channel count. Slider snaps to nearest ×16.",
+    )
+    M = st.session_state["M"]
 
     # ── Output Channels (N) ───────────────────────────────────────────────────
-    N_snap = st.slider(
-        "Output Channels  (N)",
-        min_value=16, max_value=512, value=64, step=16,
+    st.markdown("**Output Channels (N)**")
+    _c1, _c2 = st.columns([3, 1.2])
+    _c1.slider(
+        "N_slider", min_value=16, max_value=512, step=16,
+        key="_N_sl", on_change=_on_N_sl,
+        label_visibility="collapsed",
         help="Snap step = 16 — standard output widths.",
     )
-    _sl, _nb = st.columns([3, 1])
-    _sl.caption("← drag to snap · type exact →")
-    N = _nb.number_input(
-        "N exact", min_value=1, max_value=512, value=N_snap, step=1,
+    _c2.number_input(
+        "N_input", min_value=1, max_value=512, step=1,
+        key="_N_nb", on_change=_on_N_nb,
         label_visibility="collapsed",
-        help="Enter any exact channel count.",
+        help="Type any exact channel count. Slider snaps to nearest ×16.",
     )
+    N = st.session_state["N"]
 
-    # ── Kernel Size (Dk) — small discrete range, slider only ─────────────────
-    Dk = st.slider(
-        "Kernel Size  (D_K)",
-        min_value=1, max_value=11, value=3, step=2,
-        help="Square kernel Dk×Dk. Step = 2 enforces odd values (1, 3, 5, 7, 9, 11).",
-    )
-
-    # ── Spatial Dimension (H = W) ─────────────────────────────────────────────
-    # step=7 hits every standard ImageNet feature-map size:
-    #   7 → 14 → 28 → 56 → 112 → 224 (each a ×2 upscaling step).
-    H_snap = st.slider(
-        "Spatial Size  (H = W)",
-        min_value=7, max_value=224, value=56, step=7,
-        help=(
-            "Snap step = 7 — covers all ImageNet feature-map sizes: "
-            "7, 14, 28, 56, 112, 224."
-        ),
-    )
-    _sl, _nb = st.columns([3, 1])
-    _sl.caption("← drag to snap · type exact →")
-    H = _nb.number_input(
-        "H exact", min_value=1, max_value=512, value=H_snap, step=1,
+    # ── Kernel Size (D_K) ─────────────────────────────────────────────────────
+    st.markdown("**Kernel Size (D_K)**")
+    _c1, _c2 = st.columns([3, 1.2])
+    _c1.slider(
+        "Dk_slider", min_value=1, max_value=11, step=2,
+        key="_Dk_sl", on_change=_on_Dk_sl,
         label_visibility="collapsed",
-        help="Enter any exact spatial dimension.",
+        help="Odd values only: 1, 3, 5, 7, 9, 11.",
     )
+    _c2.number_input(
+        "Dk_input", min_value=1, max_value=11, step=2,
+        key="_Dk_nb", on_change=_on_Dk_nb,
+        label_visibility="collapsed",
+        help="Type any odd kernel size (1–11). Slider snaps to nearest odd.",
+    )
+    Dk = st.session_state["Dk"]
+
+    # ── Spatial Size (H = W) ──────────────────────────────────────────────────
+    st.markdown("**Spatial Size (H = W)**")
+    _c1, _c2 = st.columns([3, 1.2])
+    _c1.slider(
+        "H_slider", min_value=7, max_value=224, step=7,
+        key="_H_sl", on_change=_on_H_sl,
+        label_visibility="collapsed",
+        help="Step = 7 — covers ImageNet sizes: 7, 14, 28, 56, 112, 224.",
+    )
+    _c2.number_input(
+        "H_input", min_value=1, max_value=512, step=1,
+        key="_H_nb", on_change=_on_H_nb,
+        label_visibility="collapsed",
+        help="Type any exact spatial dimension. Slider snaps to nearest ×7.",
+    )
+    H = st.session_state["H"]
     W = H
 
     # ── Expansion Factor (t) — MBv2 mode only ─────────────────────────────────
     if _mbv2_mode:
-        t = st.slider(
-            "Expansion Factor  (t)",
-            min_value=1, max_value=6, value=6, step=1,
+        st.markdown("**Expansion Factor (t)**")
+        _c1, _c2 = st.columns([3, 1.2])
+        _c1.slider(
+            "t_slider", min_value=1, max_value=6, step=1,
+            key="_t_sl", on_change=_on_t_sl,
+            label_visibility="collapsed",
             help=(
-                "Channel multiplier for the internal expansion stage. "
-                "MobileNetV2 uses t = 6 for most blocks (t = 1 for the "
-                "first layer). Higher t gives richer intermediate features "
-                "at the cost of more parameters and FLOPs."
+                "Channel multiplier for the expand stage. "
+                "MobileNetV2 uses t = 6 for most blocks, t = 1 for the first."
             ),
         )
+        _c2.number_input(
+            "t_input", min_value=1, max_value=6, step=1,
+            key="_t_nb", on_change=_on_t_nb,
+            label_visibility="collapsed",
+            help="Type any expansion factor from 1 to 6.",
+        )
+        t = st.session_state["t"]
     else:
-        t = 1   # unused in Basic mode; set to a valid neutral value
+        t = 1   # not used in Basic mode; set to a valid neutral value
 
-    # ── Active shape summary ───────────────────────────────────────────────────
+    # ── Active tensor shape card ───────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("**Active tensor shapes**")
-    st.markdown(f"Input  : `{H} × {W} × {M}`")
-    if _mbv2_mode:
-        st.markdown(f"Expanded: `{H} × {W} × {t * M}`")
-    st.markdown(f"Output : `{H} × {W} × {N}`")
-    st.markdown(f"Kernel : `{Dk} × {Dk}`")
-    st.markdown("---")
+    with st.container(border=True):
+        st.markdown(
+            '<span class="section-chip">Active Shapes</span>',
+            unsafe_allow_html=True,
+        )
+        _exp_row = (
+            f"<tr><td style='opacity:0.55;padding:1px 8px 1px 0'>Expanded</td>"
+            f"<td><code>{H}×{W}×{t * M}</code></td></tr>"
+            if _mbv2_mode else ""
+        )
+        st.markdown(
+            f"<table style='width:100%;font-size:0.84rem;border-collapse:collapse;"
+            f"margin-top:0.3rem'>"
+            f"<tr><td style='opacity:0.55;padding:1px 8px 1px 0'>Input</td>"
+            f"    <td><code>{H}×{W}×{M}</code></td></tr>"
+            f"{_exp_row}"
+            f"<tr><td style='opacity:0.55;padding:1px 8px 1px 0'>Output</td>"
+            f"    <td><code>{H}×{W}×{N}</code></td></tr>"
+            f"<tr><td style='opacity:0.55;padding:1px 8px 1px 0'>Kernel</td>"
+            f"    <td><code>{Dk}×{Dk}</code></td></tr>"
+            f"</table>",
+            unsafe_allow_html=True,
+        )
+
     st.caption("University of Malta · Deep Learning\nCPU-only simulator · No GPU required")
 
 
