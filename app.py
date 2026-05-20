@@ -173,19 +173,27 @@ hr { border-color: rgba(128, 128, 128, 0.2) !important; }
     font-size: 0.93rem;
 }
 
-/* ── sidebar paired controls: align slider track and number-input box ─────
-   When label_visibility="collapsed" is used, Streamlit still reserves a small
-   gap above widgets.  These rules remove that reserved space so the slider in
-   col1 and the number-input in col2 sit on exactly the same horizontal baseline.
-   The padding-top on the number-input container nudges it down to match the
-   visual midpoint of the slider track (~6 px offset at standard DPI).           ── */
-[data-testid="stSidebar"] .stSlider {
-    padding-top: 0 !important;
-    margin-top: 0 !important;
+/* ── sidebar unified control tiles — Apple-style horizontal alignment ──────
+   align-items:center on the horizontal block collapses the vertical offset
+   between the slider track and the number input box.  Removing padding from
+   the slider and fixing the input height to 2.1rem puts both widgets on the
+   same optical midline regardless of Streamlit's internal box model.           ── */
+[data-testid="stSidebar"] [data-testid="stHorizontalBlock"] {
+    align-items: center !important;
 }
-[data-testid="stSidebar"] .stNumberInput {
-    padding-top: 0.35rem !important;
-    margin-top: 0 !important;
+[data-testid="stSidebar"] .stSlider {
+    padding-top: 0px !important;
+    padding-bottom: 0px !important;
+    margin-bottom: 0px !important;
+}
+[data-testid="stSidebar"] .stNumberInput > div > div > input {
+    padding-top: 4px !important;
+    padding-bottom: 4px !important;
+    height: 2.1rem !important;
+    font-family: monospace !important;
+    font-weight: 600 !important;
+    text-align: center !important;
+    border-radius: 8px !important;
 }
 /* Remove the empty label placeholder that "collapsed" leaves as a 0-height div. */
 [data-testid="stSidebar"] .stSlider [data-testid="stWidgetLabel"],
@@ -767,72 +775,117 @@ with st.sidebar:
     st.markdown("---")
     st.markdown('<span class="section-chip">Hyper-Parameters</span>',
                 unsafe_allow_html=True)
-    st.caption(
+    st.markdown(
+        "<p style='font-size:0.75rem;opacity:0.55;margin:0.2rem 0 0.6rem;'>"
         "Sliders snap to standard DL dimensions. "
-        "Type any exact value in the right-hand box."
+        "Type any exact value in the right-hand box.</p>",
+        unsafe_allow_html=True,
     )
 
     # ── Input Channels (M) ────────────────────────────────────────────────────
-    st.markdown("**Input Channels (M)**")
-    _c1, _c2 = st.columns([3, 1.2])
-    _c1.slider(
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;"
+        f"align-items:center;margin-bottom:4px;'>"
+        f"<span style='font-weight:600;font-size:0.88rem;"
+        f"color:var(--text-color);'>Input Channels</span>"
+        f"<span style='font-family:monospace;font-size:0.85rem;font-weight:700;"
+        f"color:#0ea5e9;background:rgba(14,165,233,0.1);padding:2px 8px;"
+        f"border-radius:6px;'>M = {st.session_state['M']}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    _sl, _, _nb = st.columns([3.2, 0.15, 1.0])
+    _sl.slider(
         "M_slider", min_value=16, max_value=512, step=16,
         key="_M_sl", on_change=_on_M_sl,
         label_visibility="collapsed",
         help="Snap step = 16 — standard layer widths: 16, 32, 64, 128, 256, 512.",
     )
-    _c2.number_input(
+    _nb.number_input(
         "M_input", min_value=1, max_value=512, step=1,
         key="_M_nb", on_change=_on_M_nb,
         label_visibility="collapsed",
         help="Type any exact channel count. Slider snaps to nearest ×16.",
     )
     M = st.session_state["M"]
+    st.markdown("<div style='margin-bottom:1.2rem;'></div>", unsafe_allow_html=True)
 
     # ── Output Channels (N) ───────────────────────────────────────────────────
-    st.markdown("**Output Channels (N)**")
-    _c1, _c2 = st.columns([3, 1.2])
-    _c1.slider(
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;"
+        f"align-items:center;margin-bottom:4px;'>"
+        f"<span style='font-weight:600;font-size:0.88rem;"
+        f"color:var(--text-color);'>Output Channels</span>"
+        f"<span style='font-family:monospace;font-size:0.85rem;font-weight:700;"
+        f"color:#0ea5e9;background:rgba(14,165,233,0.1);padding:2px 8px;"
+        f"border-radius:6px;'>N = {st.session_state['N']}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    _sl, _, _nb = st.columns([3.2, 0.15, 1.0])
+    _sl.slider(
         "N_slider", min_value=16, max_value=512, step=16,
         key="_N_sl", on_change=_on_N_sl,
         label_visibility="collapsed",
         help="Snap step = 16 — standard output widths.",
     )
-    _c2.number_input(
+    _nb.number_input(
         "N_input", min_value=1, max_value=512, step=1,
         key="_N_nb", on_change=_on_N_nb,
         label_visibility="collapsed",
         help="Type any exact channel count. Slider snaps to nearest ×16.",
     )
     N = st.session_state["N"]
+    st.markdown("<div style='margin-bottom:1.2rem;'></div>", unsafe_allow_html=True)
 
     # ── Kernel Size (D_K) ─────────────────────────────────────────────────────
-    st.markdown("**Kernel Size (D_K)**")
-    _c1, _c2 = st.columns([3, 1.2])
-    _c1.slider(
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;"
+        f"align-items:center;margin-bottom:4px;'>"
+        f"<span style='font-weight:600;font-size:0.88rem;"
+        f"color:var(--text-color);'>Kernel Size</span>"
+        f"<span style='font-family:monospace;font-size:0.85rem;font-weight:700;"
+        f"color:#0ea5e9;background:rgba(14,165,233,0.1);padding:2px 8px;"
+        f"border-radius:6px;'>Dₖ = {st.session_state['Dk']}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    _sl, _, _nb = st.columns([3.2, 0.15, 1.0])
+    _sl.slider(
         "Dk_slider", min_value=1, max_value=11, step=2,
         key="_Dk_sl", on_change=_on_Dk_sl,
         label_visibility="collapsed",
         help="Odd values only: 1, 3, 5, 7, 9, 11.",
     )
-    _c2.number_input(
+    _nb.number_input(
         "Dk_input", min_value=1, max_value=11, step=2,
         key="_Dk_nb", on_change=_on_Dk_nb,
         label_visibility="collapsed",
         help="Type any odd kernel size (1–11). Slider snaps to nearest odd.",
     )
     Dk = st.session_state["Dk"]
+    st.markdown("<div style='margin-bottom:1.2rem;'></div>", unsafe_allow_html=True)
 
     # ── Spatial Size (H = W) ──────────────────────────────────────────────────
-    st.markdown("**Spatial Size (H = W)**")
-    _c1, _c2 = st.columns([3, 1.2])
-    _c1.slider(
+    st.markdown(
+        f"<div style='display:flex;justify-content:space-between;"
+        f"align-items:center;margin-bottom:4px;'>"
+        f"<span style='font-weight:600;font-size:0.88rem;"
+        f"color:var(--text-color);'>Spatial Size</span>"
+        f"<span style='font-family:monospace;font-size:0.85rem;font-weight:700;"
+        f"color:#0ea5e9;background:rgba(14,165,233,0.1);padding:2px 8px;"
+        f"border-radius:6px;'>H = {st.session_state['H']}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    _sl, _, _nb = st.columns([3.2, 0.15, 1.0])
+    _sl.slider(
         "H_slider", min_value=7, max_value=224, step=7,
         key="_H_sl", on_change=_on_H_sl,
         label_visibility="collapsed",
         help="Step = 7 — covers ImageNet sizes: 7, 14, 28, 56, 112, 224.",
     )
-    _c2.number_input(
+    _nb.number_input(
         "H_input", min_value=1, max_value=512, step=1,
         key="_H_nb", on_change=_on_H_nb,
         label_visibility="collapsed",
@@ -840,12 +893,23 @@ with st.sidebar:
     )
     H = st.session_state["H"]
     W = H
+    st.markdown("<div style='margin-bottom:1.2rem;'></div>", unsafe_allow_html=True)
 
     # ── Expansion Factor (t) — MBv2 mode only ─────────────────────────────────
     if _mbv2_mode:
-        st.markdown("**Expansion Factor (t)**")
-        _c1, _c2 = st.columns([3, 1.2])
-        _c1.slider(
+        st.markdown(
+            f"<div style='display:flex;justify-content:space-between;"
+            f"align-items:center;margin-bottom:4px;'>"
+            f"<span style='font-weight:600;font-size:0.88rem;"
+            f"color:var(--text-color);'>Expansion Factor</span>"
+            f"<span style='font-family:monospace;font-size:0.85rem;font-weight:700;"
+            f"color:#818cf8;background:rgba(129,140,248,0.1);padding:2px 8px;"
+            f"border-radius:6px;'>t = {st.session_state['t']}</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        _sl, _, _nb = st.columns([3.2, 0.15, 1.0])
+        _sl.slider(
             "t_slider", min_value=1, max_value=6, step=1,
             key="_t_sl", on_change=_on_t_sl,
             label_visibility="collapsed",
@@ -854,13 +918,14 @@ with st.sidebar:
                 "MobileNetV2 uses t = 6 for most blocks, t = 1 for the first."
             ),
         )
-        _c2.number_input(
+        _nb.number_input(
             "t_input", min_value=1, max_value=6, step=1,
             key="_t_nb", on_change=_on_t_nb,
             label_visibility="collapsed",
             help="Type any expansion factor from 1 to 6.",
         )
         t = st.session_state["t"]
+        st.markdown("<div style='margin-bottom:1.2rem;'></div>", unsafe_allow_html=True)
     else:
         t = 1   # not used in Basic mode; set to a valid neutral value
 
