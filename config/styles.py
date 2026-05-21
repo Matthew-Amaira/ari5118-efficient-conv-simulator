@@ -119,6 +119,30 @@ _CSS = """
     padding-top: 1.4rem !important;
 }
 
+/* ── tab icon glows — distinct neon accent per tab ── */
+[data-testid="stTabs"] [data-baseweb="tab"]:nth-child(1) [data-testid="stIcon"] {
+    font-size: 1.3rem;
+    filter: drop-shadow(0 0 7px #0ea5e9);
+}
+[data-testid="stTabs"] [data-baseweb="tab"]:nth-child(2) [data-testid="stIcon"] {
+    font-size: 1.3rem;
+    filter: drop-shadow(0 0 7px #818cf8);
+}
+[data-testid="stTabs"] [data-baseweb="tab"]:nth-child(3) [data-testid="stIcon"] {
+    font-size: 1.3rem;
+    filter: drop-shadow(0 0 7px #22c55e);
+}
+/* Brighten the active tab's icon further */
+[data-testid="stTabs"] [aria-selected="true"]:nth-child(1) [data-testid="stIcon"] {
+    filter: drop-shadow(0 0 10px #0ea5e9) brightness(1.15);
+}
+[data-testid="stTabs"] [aria-selected="true"]:nth-child(2) [data-testid="stIcon"] {
+    filter: drop-shadow(0 0 10px #818cf8) brightness(1.15);
+}
+[data-testid="stTabs"] [aria-selected="true"]:nth-child(3) [data-testid="stIcon"] {
+    filter: drop-shadow(0 0 10px #22c55e) brightness(1.15);
+}
+
 /* ── tables ── */
 .stTable table {
     background: rgba(128, 128, 128, 0.05) !important;
